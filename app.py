@@ -15,9 +15,15 @@ from langchain_core.prompts import (
     HumanMessagePromptTemplate,
 )
 
+# --- Fix Pydantic forward-ref issue for ChatOpenAI on some stacks ---
+try:
+    ChatOpenAI.model_rebuild()
+except Exception:
+    pass
+
 st.set_page_config(page_title="HORECA Arabic Content Generator", layout="wide")
 st.title("HORECA Arabic Content Generator")
-st.caption("PyMySQL → pandas → LangChain(OpenAI). Page 1 shows attribute_combined. Page 2: English (source) then Arabic.")
+st.caption("PyMySQL → pandas → LangChain(OpenAI). Tab 1 shows attribute_combined. Tab 2: English source first, then Arabic JSON.")
 
 # -------------------------
 # Sidebar controls
@@ -32,7 +38,7 @@ db_name = st.sidebar.text_input("Database", value="horecadbuae")
 st.sidebar.header("OpenAI")
 openai_key = st.sidebar.text_input("OPENAI_API_KEY", value="", type="password", help="Paste your OpenAI API key here")
 model_name = st.sidebar.selectbox("Model", ["gpt-4o", "gpt-4.1", "gpt-4o-mini"], index=0)
-temperature = st.sidebar.slider("Temperature", min_value=0.0, max_value=1.0, value=0.2, step=0.1)
+temperature = st.sidebar.slider("Temperature", 0.0, 1.0, 0.2, 0.1)
 
 st.sidebar.divider()
 load_btn = st.sidebar.button("Connect & Load Data", type="primary")
@@ -71,13 +77,17 @@ def load_joined_dataframe(h, u, p, prt, db):
         conn.close()
 
 def build_out_dict(df: pd.DataFrame) -> pd.DataFrame:
-    # One row per product with attribute_combined (dict)
-    out = (
-        df.groupby(["id", "sku", "product_name"])
-          .apply(lambda g: dict(zip(g["attribute_name"], g["attribute_value"])))
-          .reset_index(name="attribute_combined")
+    """One row per product with attribute_combined (dict), built via pivot (no groupby.apply warnings)."""
+    meta = ["id", "sku", "product_name"]
+    wide = (
+        df.pivot_table(index=meta, columns="attribute_name", values="attribute_value", aggfunc="first")
+          .reset_index()
     )
-    return out
+    attr_cols = [c for c in wide.columns if c not in meta]
+    wide["attribute_combined"] = wide[attr_cols].apply(
+        lambda r: {k: v for k, v in r.items() if pd.notna(v)}, axis=1
+    )
+    return wide[meta + ["attribute_combined"]]
 
 def get_product_row(out_df: pd.DataFrame, product_id):
     pid = str(product_id).strip()
@@ -92,14 +102,10 @@ def to_builtin(obj):
         return {str(k): to_builtin(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple, set)):
         return [to_builtin(v) for v in obj]
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
-    if isinstance(obj, (np.bool_,)):
-        return bool(obj)
-    if obj is pd.NA or (isinstance(obj, float) and pd.isna(obj)):
-        return None
+    if isinstance(obj, (np.integer,)):   return int(obj)
+    if isinstance(obj, (np.floating,)):  return float(obj)
+    if isinstance(obj, (np.bool_,)):     return bool(obj)
+    if obj is pd.NA or (isinstance(obj, float) and pd.isna(obj)): return None
     return obj
 
 def build_product_payload(row: pd.Series) -> dict:
@@ -112,10 +118,8 @@ def build_product_payload(row: pd.Series) -> dict:
 
 def choose_k(atr: dict) -> int:
     n = len(atr or {})
-    if n <= 4:
-        return 4
-    elif n <= 8:
-        return 5
+    if n <= 4: return 4
+    if n <= 8: return 5
     return 6
 
 # -------------------------
@@ -135,7 +139,7 @@ with data_tab:
                 out_dict = build_out_dict(df)
                 show_cols = ["id", "sku", "product_name", "attribute_combined"]
                 st.success(f"Loaded {len(out_dict):,} products. Showing id, sku, product_name, attribute_combined.")
-                st.dataframe(out_dict[show_cols], use_container_width=True, height=620)
+                st.dataframe(out_dict[show_cols], width="stretch", height=620)
                 st.session_state["out_dict"] = out_dict
         except Exception as e:
             st.error(f"Error loading data: {e}")
@@ -153,16 +157,13 @@ with generate_tab:
 
         if run_btn:
             if not product_id_input.strip():
-                st.error("Please enter a Product ID.")
-                st.stop()
+                st.error("Please enter a Product ID."); st.stop()
             if not openai_key.strip():
-                st.error("Please paste your OPENAI_API_KEY in the sidebar.")
-                st.stop()
+                st.error("Please paste your OPENAI_API_KEY in the sidebar."); st.stop()
 
             row = get_product_row(out_dict, product_id_input)
             if row is None:
-                st.error(f"Product doesn't exist with associated id: {product_id_input}")
-                st.stop()
+                st.error(f"Product doesn't exist with associated id: {product_id_input}"); st.stop()
 
             # Build payload / English source first
             product_payload = build_product_payload(row)
@@ -173,7 +174,7 @@ with generate_tab:
             st.markdown("### English Source (attribute_combined)")
             st.code(attribute_json, language="json")
 
-            # PROMPTS (no raw JSON schema to avoid templating collisions)
+            # PROMPTS
             SYSTEM_PROMPT = f"""
 You are a HORECA Arabic content specialist for B2B eCommerce. Produce Arabic output with these rules:
 
@@ -236,8 +237,8 @@ Ensure it is strictly valid JSON and follows the counts exactly.
 
             with st.spinner("Translating to Arabic JSON via OpenAI..."):
                 llm = ChatOpenAI(
-                    api_key=openai_key,          # <-- key from sidebar
-                    model=model_name,            # e.g., gpt-4o
+                    api_key=openai_key,     # key from sidebar
+                    model=model_name,       # e.g., gpt-4o
                     temperature=float(temperature),
                     timeout=120,
                 )
