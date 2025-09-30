@@ -1,25 +1,24 @@
 # app.py
 # pip install streamlit pandas pymysql numpy SQLAlchemy langchain-core langchain-openai
-
 import json
 import re
 import numpy as np
 import pandas as pd
 import pymysql
 import streamlit as st
-
 from langchain_openai import ChatOpenAI
+from langchain_core.caches import BaseCache  # Add this line
 from langchain_core.prompts import (
     ChatPromptTemplate,
     SystemMessagePromptTemplate,
     HumanMessagePromptTemplate,
 )
-
 # --- Fix Pydantic forward-ref issue for ChatOpenAI on some stacks ---
 try:
     ChatOpenAI.model_rebuild()
 except Exception:
     pass
+# ... (rest of your code remains unchanged)
 
 st.set_page_config(page_title="HORECA Arabic Content Generator", layout="wide")
 st.title("HORECA Arabic Content Generator")
