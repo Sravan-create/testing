@@ -12,11 +12,12 @@ import pymysql
 import streamlit as st
 
 from langchain_openai import ChatOpenAI
-from langchain.prompts import (
+from langchain_core.prompts import (
     ChatPromptTemplate,
     SystemMessagePromptTemplate,
     HumanMessagePromptTemplate,
 )
+
 
 st.set_page_config(page_title="HORECA Arabic Content Generator", layout="wide")
 
