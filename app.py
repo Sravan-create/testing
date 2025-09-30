@@ -1,11 +1,8 @@
 # app.py
-# -------------------------
-# pip install streamlit pandas pymysql langchain langchain-openai numpy
-# -------------------------
+# pip install streamlit pandas pymysql numpy SQLAlchemy langchain-core langchain-openai
 
-import os
-import re
 import json
+import re
 import numpy as np
 import pandas as pd
 import pymysql
@@ -18,46 +15,41 @@ from langchain_core.prompts import (
     HumanMessagePromptTemplate,
 )
 
-
 st.set_page_config(page_title="HORECA Arabic Content Generator", layout="wide")
-
 st.title("HORECA Arabic Content Generator")
 st.caption("PyMySQL → pandas → LangChain(OpenAI). Page 1 shows attribute_combined. Page 2: English (source) then Arabic.")
 
 # -------------------------
-# Sidebar inputs
+# Sidebar controls
 # -------------------------
 st.sidebar.header("Database Connection")
-host = st.sidebar.text_input(
-    "Host",
-    value="horecadbdevelopment.c1c86oy8g663.me-south-1.rds.amazonaws.com",
-)
+host = st.sidebar.text_input("Host", value="horecadbdevelopment.c1c86oy8g663.me-south-1.rds.amazonaws.com")
 port = st.sidebar.number_input("Port", value=3306, step=1)
 user = st.sidebar.text_input("Username", value="horecaDbUAE")
 password = st.sidebar.text_input("Password", value="Blackmango2025", type="password")
 db_name = st.sidebar.text_input("Database", value="horecadbuae")
 
 st.sidebar.header("OpenAI")
-openai_key = st.sidebar.text_input(
-    "OPENAI_API_KEY", value="", type="password", help="Paste your OpenAI API key here"
-)
+openai_key = st.sidebar.text_input("OPENAI_API_KEY", value="", type="password", help="Paste your OpenAI API key here")
+model_name = st.sidebar.selectbox("Model", ["gpt-4o", "gpt-4.1", "gpt-4o-mini"], index=0)
+temperature = st.sidebar.slider("Temperature", min_value=0.0, max_value=1.0, value=0.2, step=0.1)
 
 st.sidebar.divider()
 load_btn = st.sidebar.button("Connect & Load Data", type="primary")
 
 # -------------------------
-# SQL to fetch the tall table (row-per-attribute)
+# SQL (row-per-attribute)
 # -------------------------
 SQL = """
 SELECT
-  p.id AS id,                
+  p.id AS id,
   p.sku,
   p.name AS product_name,
-  a.name AS attribute_name,  
-  pa.attribute_value         
+  a.name AS attribute_name,
+  pa.attribute_value
 FROM ec_products AS p
 JOIN product_attributes AS pa
-  ON pa.product_id = p.id       
+  ON pa.product_id = p.id
 JOIN attributes AS a
   ON a.id = pa.attribute_id
 ORDER BY p.id, a.name;
@@ -127,11 +119,11 @@ def choose_k(atr: dict) -> int:
     return 6
 
 # -------------------------
-# Layout tabs
+# Tabs
 # -------------------------
 data_tab, generate_tab = st.tabs(["1) Load & View attribute_combined", "2) Generate (English → Arabic)"])
 
-# ----- Tab 1: Load & show only attribute_combined -----
+# ----- Tab 1 -----
 with data_tab:
     st.subheader("Step 1: Connect and Load")
     if load_btn:
@@ -141,15 +133,14 @@ with data_tab:
                 st.warning("The query returned no rows.")
             else:
                 out_dict = build_out_dict(df)
-                # Only show the requested columns directly (no expanders)
                 show_cols = ["id", "sku", "product_name", "attribute_combined"]
                 st.success(f"Loaded {len(out_dict):,} products. Showing id, sku, product_name, attribute_combined.")
-                st.dataframe(out_dict[show_cols], use_container_width=True, height=600)
+                st.dataframe(out_dict[show_cols], use_container_width=True, height=620)
                 st.session_state["out_dict"] = out_dict
         except Exception as e:
             st.error(f"Error loading data: {e}")
 
-# ----- Tab 2: Generate flow -----
+# ----- Tab 2 -----
 with generate_tab:
     st.subheader("Step 2: Generate")
     if "out_dict" not in st.session_state:
@@ -163,24 +154,27 @@ with generate_tab:
         if run_btn:
             if not product_id_input.strip():
                 st.error("Please enter a Product ID.")
-            elif not openai_key.strip():
+                st.stop()
+            if not openai_key.strip():
                 st.error("Please paste your OPENAI_API_KEY in the sidebar.")
-            else:
-                row = get_product_row(out_dict, product_id_input)
-                if row is None:
-                    st.error(f"Product doesn't exist with associated id: {product_id_input}")
-                else:
-                    # Build payload / English source first
-                    product_payload = build_product_payload(row)
-                    attribute_json = json.dumps(to_builtin(product_payload), ensure_ascii=False, indent=2)
-                    k = choose_k(product_payload.get("attributes", {}))
+                st.stop()
 
-                    # Show ENGLISH SOURCE FIRST (no dropdown)
-                    st.markdown("### English Source (attribute_combined)")
-                    st.code(attribute_json, language="json")
+            row = get_product_row(out_dict, product_id_input)
+            if row is None:
+                st.error(f"Product doesn't exist with associated id: {product_id_input}")
+                st.stop()
 
-                    # PROMPTS
-                    SYSTEM_PROMPT = f"""
+            # Build payload / English source first
+            product_payload = build_product_payload(row)
+            attribute_json = json.dumps(to_builtin(product_payload), ensure_ascii=False, indent=2)
+            k = choose_k(product_payload.get("attributes", {}))
+
+            # Show ENGLISH SOURCE FIRST
+            st.markdown("### English Source (attribute_combined)")
+            st.code(attribute_json, language="json")
+
+            # PROMPTS (no raw JSON schema to avoid templating collisions)
+            SYSTEM_PROMPT = f"""
 You are a HORECA Arabic content specialist for B2B eCommerce. Produce Arabic output with these rules:
 
 Style:
@@ -218,7 +212,7 @@ Output format:
 - faqs: array of EXACTLY 5 objects with keys "question" and "answer". Technical, product-specific, short, and factual. No dimensions/weight unless handheld. Each ends with a period.
 """.strip()
 
-                    HUMAN_PROMPT = """
+            HUMAN_PROMPT = """
 Use ONLY the following product JSON as your source of truth:
 
 PRODUCT_JSON_START
@@ -234,48 +228,52 @@ Return JSON only with keys: description, benefits, faqs.
 Ensure it is strictly valid JSON and follows the counts exactly.
 """.strip()
 
-                    # Build prompt & call model
-                    os.environ["OPENAI_API_KEY"] = openai_key
-                    sys_tmpl = SystemMessagePromptTemplate.from_template(SYSTEM_PROMPT)
-                    hum_tmpl = HumanMessagePromptTemplate.from_template(HUMAN_PROMPT)
-                    prompt = ChatPromptTemplate.from_messages([sys_tmpl, hum_tmpl])
-                    msgs = prompt.format_messages(attribute_json=attribute_json, k=k)
+            # Build prompt & call model (pass API key explicitly)
+            sys_tmpl = SystemMessagePromptTemplate.from_template(SYSTEM_PROMPT)
+            hum_tmpl = HumanMessagePromptTemplate.from_template(HUMAN_PROMPT)
+            prompt = ChatPromptTemplate.from_messages([sys_tmpl, hum_tmpl])
+            msgs = prompt.format_messages(attribute_json=attribute_json, k=k)
 
-                    with st.spinner("Translating to Arabic JSON via OpenAI..."):
-                        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
-                        resp = llm.invoke(msgs)
-                        raw = resp.content.strip()
+            with st.spinner("Translating to Arabic JSON via OpenAI..."):
+                llm = ChatOpenAI(
+                    api_key=openai_key,          # <-- key from sidebar
+                    model=model_name,            # e.g., gpt-4o
+                    temperature=float(temperature),
+                    timeout=120,
+                )
+                resp = llm.invoke(msgs)
+                raw = resp.content.strip()
 
-                        # Strict JSON parse with tiny repair for trailing commas
-                        try:
-                            result_json = json.loads(raw)
-                        except json.JSONDecodeError:
-                            fixed = re.sub(r",\s*([}\]])", r"\1", raw)
-                            result_json = json.loads(fixed)
+                # Strict JSON parse with tiny repair for trailing commas
+                try:
+                    result_json = json.loads(raw)
+                except json.JSONDecodeError:
+                    fixed = re.sub(r",\s*([}\]])", r"\1", raw)
+                    result_json = json.loads(fixed)
 
-                        # Enforce counts
-                        if not isinstance(result_json.get("benefits"), list) or len(result_json["benefits"]) != k:
-                            arr = (result_json.get("benefits") or [])[:k]
-                            arr += [{"benefit": ".", "feature": "."}] * (k - len(arr))
-                            result_json["benefits"] = arr
-                        if not isinstance(result_json.get("faqs"), list) or len(result_json["faqs"]) != 5:
-                            arr = (result_json.get("faqs") or [])[:5]
-                            arr += [{"question": ".", "answer": "."}] * (5 - len(arr))
-                            result_json["faqs"] = arr[:5]
+                # Enforce counts
+                if not isinstance(result_json.get("benefits"), list) or len(result_json["benefits"]) != k:
+                    arr = (result_json.get("benefits") or [])[:k]
+                    arr += [{"benefit": ".", "feature": "."}] * (k - len(arr))
+                    result_json["benefits"] = arr
+                if not isinstance(result_json.get("faqs"), list) or len(result_json["faqs"]) != 5:
+                    arr = (result_json.get("faqs") or [])[:5]
+                    arr += [{"question": ".", "answer": "."}] * (5 - len(arr))
+                    result_json["faqs"] = arr[:5]
 
-                    st.markdown("### Arabic JSON (translated output)")
-                    st.json(result_json, expanded=True)
+            st.markdown("### Arabic JSON (translated output)")
+            st.json(result_json, expanded=True)
 
-                    # Downloads
-                    st.download_button(
-                        "Download English Source JSON",
-                        data=attribute_json.encode("utf-8"),
-                        file_name=f"product_{row['id']}_source.json",
-                        mime="application/json",
-                    )
-                    st.download_button(
-                        "Download Arabic JSON",
-                        data=json.dumps(result_json, ensure_ascii=False, indent=2).encode("utf-8"),
-                        file_name=f"product_{row['id']}_arabic.json",
-                        mime="application/json",
-                    )
+            # Downloads
+            st.download_button(
+                "Download English Source JSON",
+                data=attribute_json.encode("utf-8"),
+                file_name=f"product_{row['id']}_source.json",
+                mime="application/json",
+            )
+            st.download_button(
+                "Download Arabic JSON",
+                data=json.dumps(result_json, ensure_ascii=False, indent=2).encode("utf-8"),
+                file_name=f"product_{row['id']}_arabic.json",
+                mime="application/json",
+            )
