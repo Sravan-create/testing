@@ -29,7 +29,7 @@ password = st.sidebar.text_input("Password", value="Blackmango2025", type="passw
 db_name = st.sidebar.text_input("Database", value="horecadbuae")
 st.sidebar.header("OpenAI")
 openai_key = st.sidebar.text_input("OPENAI_API_KEY", value="", type="password", help="Paste your OpenAI API key here")
-model_name = st.sidebar.selectbox("Model", ["gpt-4o", "gpt-4o-mini", "gpt-5"], index=0)
+model_name = st.sidebar.selectbox("Model", ["gpt-4o-mini"], index=0)
 temperature = st.sidebar.slider("Temperature", 0.0, 1.0, 0.2, 0.1)
 st.sidebar.divider()
 load_btn = st.sidebar.button("Connect & Load Data", type="primary")
@@ -201,7 +201,7 @@ OUTPUT STRUCTURE — RETURN JSON ONLY (no extra prose, no markdown)
 }}
 
 PRODUCT DESCRIPTION (4 paragraphs; 300–350 characters each)
-P1: Start with: "The {brand} {product_name} and SKU {SKU} is ..."
+P1: Start with: "The {{brand}} {{product_name}} and SKU {{SKU}} is ..."
 State what it is, where it’s used (commercial kitchens, hotels, catering, etc.), and 1–2 key spec highlights.
 P2: Core technical specifications, performance, control features, mechanisms.
 P3: Include dimensions in WxDxH or LxDxH format if provided; installation notes; safety/stability features.
