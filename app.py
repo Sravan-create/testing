@@ -7,7 +7,8 @@ import pandas as pd
 import pymysql
 import streamlit as st
 from langchain_openai import ChatOpenAI
-from langchain_core.caches import BaseCache  # Add this line
+from langchain_core.caches import BaseCache  # Existing for previous fix
+from langchain_core.callbacks import Callbacks  # Add this line
 from langchain_core.prompts import (
     ChatPromptTemplate,
     SystemMessagePromptTemplate,
