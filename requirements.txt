@@ -4,4 +4,3 @@ numpy==2.3.3
 pymysql==1.1.1
 langchain==0.3.7
 langchain-openai==0.2.8
-pip install --upgrade pip
