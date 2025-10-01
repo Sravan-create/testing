@@ -1,276 +1,261 @@
 # app.py
-# pip install streamlit pandas pymysql numpy SQLAlchemy langchain-core langchain-openai textwrap
+# pip install streamlit pandas pymysql numpy SQLAlchemy openai
 import json
 import re
 import textwrap
 import numpy as np
 import pandas as pd
-import pymysql
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 import streamlit as st
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-# --- Fix Pydantic forward-ref issue for ChatOpenAI on some stacks ---
-try:
-    ChatOpenAI.model_rebuild()
-except Exception:
-    pass
+from openai import OpenAI
+
+# --- Page Config ---
 st.set_page_config(page_title="HORECA Arabic Content Generator", layout="wide")
-st.title("HORECA Arabic Content Generator")
-st.caption("PyMySQL → pandas → LangChain(OpenAI). Tab 1 shows attribute_combined. Tab 2: English source first, then Arabic JSON.")
+st.title("HORECA Arabic Content Generator (Single Product)")
+st.caption("Connect to DB ➔ Find Product ID ➔ Generate Content ➔ Save to DB")
+
 # -------------------------
 # Sidebar controls
 # -------------------------
-st.sidebar.header("Database Connection")
-host = st.sidebar.text_input("Host", value="horecadbdevelopment.c1c86oy8g663.me-south-1.rds.amazonaws.com")
-port = st.sidebar.number_input("Port", value=3306, step=1)
-user = st.sidebar.text_input("Username", value="horecaDbUAE")
-password = st.sidebar.text_input("Password", value="Blackmango2025", type="password")
-db_name = st.sidebar.text_input("Database", value="horecadbuae")
-st.sidebar.header("OpenAI")
-openai_key = st.sidebar.text_input("OPENAI_API_KEY", value="", type="password", help="Paste your OpenAI API key here")
-model_name = "gpt-5"
-st.sidebar.divider()
-load_btn = st.sidebar.button("Connect & Load Data", type="primary")
+with st.sidebar:
+    st.header("1. Database Connection")
+    host = st.text_input("Host", value="horecadbdevelopment.c1c86oy8g663.me-south-1.rds.amazonaws.com")
+    port = st.number_input("Port", value=3306, step=1)
+    user = st.text_input("Username", value="horecaDbUAE")
+    password = st.text_input("Password", value="Blackmango2025", type="password")
+    db_name = st.text_input("Database", value="horecadbuae")
+
+    st.header("2. OpenAI Configuration")
+    openai_key = st.text_input("OPENAI_API_KEY", type="password", help="Paste your OpenAI API key here")
+    
+    st.divider()
+    load_btn = st.button("Connect & Load Data", type="primary")
+
 # -------------------------
-# SQL (row-per-attribute) — now with brand
+# SQL Queries
 # -------------------------
-SQL = textwrap.dedent("""
-    SELECT
-      p.id AS id,
-      p.sku AS sku,
-      p.name AS product_name,
-      b.name AS brand_name, -- brand from ec_brands
-      a.name AS attribute_name,
-      pa.attribute_value
+FETCH_SQL = textwrap.dedent("""
+    SELECT p.id, p.sku, p.name AS product_name, b.name AS brand_name, a.name AS attribute_name, pa.attribute_value
     FROM ec_products AS p
     LEFT JOIN ec_brands AS b ON b.id = p.brand_id
     JOIN product_attributes AS pa ON pa.product_id = p.id
     JOIN attributes AS a ON a.id = pa.attribute_id
+    WHERE p.is_published = 1
     ORDER BY p.id, a.name;
 """)
+
+CREATE_TABLE_SQL = textwrap.dedent("""
+    CREATE TABLE IF NOT EXISTS product_arabic_content (
+        product_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+        description_arabic JSON,
+        benefits_arabic JSON,
+        faqs_arabic JSON,
+        error_message TEXT,
+        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        CONSTRAINT fk_product_content_id FOREIGN KEY (product_id) REFERENCES ec_products(id) ON DELETE CASCADE
+    );
+""")
+
 # -------------------------
-# Helpers
+# Data Loading and Helper Functions
 # -------------------------
-def get_connection(h, u, p, prt, db):
-    return pymysql.connect(host=h, user=u, password=p, port=prt, database=db)
-@st.cache_data(show_spinner=True, ttl=600)
-def load_joined_dataframe(h, u, p, prt, db):
-    engine_str = f"mysql+pymysql://{u}:{p}@{h}:{prt}/{db}"
+@st.cache_data(show_spinner="Connecting to database and loading products...", ttl=600)
+def load_and_prepare_data(_h, _u, _p, _prt, _db):
+    engine_str = f"mysql+pymysql://{_u}:{_p}@{_h}:{_prt}/{_db}"
     engine = create_engine(engine_str)
-    try:
-        df = pd.read_sql(SQL, engine)
-        return df
-    finally:
-        engine.dispose()
-def build_out_dict(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    One row per product with attribute_combined (dict), built via pivot
-    to avoid groupby.apply warnings.
-    """
+    with engine.connect() as connection:
+        connection.execute(text(CREATE_TABLE_SQL))
+        df = pd.read_sql(FETCH_SQL, connection)
+    
+    if df.empty: return pd.DataFrame()
+
     meta = ["id", "sku", "product_name", "brand_name"]
-    wide = (
-        df.pivot_table(
-            index=meta, columns="attribute_name", values="attribute_value", aggfunc="first"
-        ).reset_index()
-    )
+    wide = df.pivot_table(index=meta, columns="attribute_name", values="attribute_value", aggfunc="first").reset_index()
     attr_cols = [c for c in wide.columns if c not in meta]
-    wide["attribute_combined"] = wide[attr_cols].apply(
-        lambda r: {k: v for k, v in r.items() if pd.notna(v)}, axis=1
-    )
+    wide["attribute_combined"] = wide[attr_cols].apply(lambda r: {k: v for k, v in r.items() if pd.notna(v)}, axis=1)
     return wide[meta + ["attribute_combined"]]
-def get_product_row(out_df: pd.DataFrame, product_id):
-    pid = str(product_id).strip()
-    mask = out_df["id"].astype(str).str.strip() == pid
-    if not mask.any():
-        return None
-    return out_df.loc[mask].iloc[0]
-def to_builtin(obj):
-    """Recursively convert NumPy/pandas scalars for JSON serialization."""
-    if isinstance(obj, dict):
-        return {str(k): to_builtin(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple, set)):
-        return [to_builtin(v) for v in obj]
-    if isinstance(obj, (np.integer,)): return int(obj)
-    if isinstance(obj, (np.floating,)): return float(obj)
-    if isinstance(obj, (np.bool_,)): return bool(obj)
-    if obj is pd.NA or (isinstance(obj, float) and pd.isna(obj)): return None
-    return obj
-def build_product_payload(row: pd.Series) -> dict:
-    return {
-        "id": row["id"],
-        "sku": row.get("sku"),
-        "product_name": row.get("product_name"),
-        "brand_name": row.get("brand_name"), # include brand in payload
-        "attributes": row.get("attribute_combined") or {},
+
+def decide_benefit_count(num_attrs: int) -> int:
+    if num_attrs <= 4: return 5
+    if num_attrs == 5: return 6
+    if num_attrs == 6: return 7
+    if 7 <= num_attrs <= 8: return 8
+    if 9 <= num_attrs <= 10: return 9
+    return 10
+
+def is_arabic(text):
+    if not text: return False
+    arabic_count = sum(1 for char in text if '\u0600' <= char <= '\u0FEFF')
+    total_chars = len(text.replace(" ", ""))
+    return (arabic_count / total_chars) > 0.7 if total_chars > 0 else False
+
+def check_content_arabic(desc, benefits, faqs):
+    texts = desc + [b.get('benefit', '') for b in benefits] + [b.get('feature', '') for b in benefits] + \
+            [f.get('question', '') for f in faqs] + [f.get('answer', '') for f in faqs]
+    return all(is_arabic(t) for t in texts if t.strip())
+
+# --- Core OpenAI Generation Logic (from your script) ---
+def generate_with_openai(row, client):
+    """Generates content for a single product row with robust retries."""
+    pid = str(row['id'])
+    attributes = row.get('attribute_combined', {})
+    k = decide_benefit_count(len(attributes))
+
+    product_payload = {
+        "brand_name": row.get('brand_name'),
+        "product_name": row.get('product_name'),
+        "sku": row.get('sku'),
+        "attributes": attributes
     }
-def choose_k(atr: dict) -> int:
-    n = len(atr or {})
-    if n <= 4: return 4
-    if n <= 8: return 5
-    return 6
-# -------------------------
-# Tabs
-# -------------------------
-data_tab, generate_tab = st.tabs(["1) Load & View attribute_combined", "2) Generate (English → Arabic)"])
-# ----- Tab 1 -----
-with data_tab:
-    st.subheader("Step 1: Connect and Load")
-    if load_btn:
+    attribute_json = json.dumps(product_payload, ensure_ascii=False, indent=2)
+
+    prompt_template = textwrap.dedent("""
+    Use ONLY this product JSON as your source of truth: {attribute_json}
+
+    ROLE & AUDIENCE: Act as a HORECA content specialist for a B2B eCommerce platform. Audience: chefs, commercial kitchen operators.
+    
+    TONE & STYLE: Modern Standard Arabic (MSA), clear, factual, B2B. Active voice. Use ONLY listed attributes. All numbers in Arabic numerals (٠١٢٣٤٥٦٧٨٩). All content RTL.
+    
+    CRITICAL RULES: Transliterate English brand names ONCE and reuse. Do NOT merge brand, model, SKU. Translate "Group" in "1-Group" as "مجموعة".
+    
+    HARD RULES: NO inventing details. NO section titles. Translate units and values exactly.
+    
+    OUTPUT STRUCTURE — RETURN VALID JSON ONLY (no markdown):
+    {{
+      "description": ["paragraph1", "paragraph2", "paragraph3", "paragraph4"],
+      "benefits": [ // EXACTLY {k} items: {{"benefit": "...", "feature": "..."}} ],
+      "faqs": [ // EXACTLY 5 items: {{"question": "...", "answer": "..."}} ]
+    }}
+    """)
+    prompt = prompt_template.format(attribute_json=attribute_json, k=k)
+    
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
-            df = load_joined_dataframe(host, user, password, port, db_name)
-            if df.empty:
-                st.warning("The query returned no rows.")
+            retry_reason = "" if attempt == 0 else "Previous output was invalid. Strictly follow all rules, especially JSON format, Arabic language, and exact counts."
+            resp = client.chat.completions.create(
+                model="gpt-4o",  # Model is locked here as requested
+                temperature=0.3,
+                messages=[{"role": "user", "content": prompt + f"\n\n{retry_reason}"}]
+            )
+            message_content = resp.choices[0].message.content.strip()
+            
+            match = re.search(r"\{[\s\S]*\}", message_content)
+            if not match:
+                if attempt == max_retries - 1:
+                    return {"pid": pid, "error": f"Failed after {max_retries} attempts: No valid JSON found."}
+                continue
+
+            data = json.loads(match.group(0))
+            is_content_arabic = check_content_arabic(data.get("description", []), data.get("benefits", []), data.get("faqs", []))
+            if len(data.get("benefits", [])) == k and len(data.get("faqs", [])) == 5 and is_content_arabic:
+                return {"pid": pid, "data": data, "source_json": attribute_json} # Success
             else:
-                out_dict = build_out_dict(df)
-                show_cols = ["id", "sku", "product_name", "brand_name", "attribute_combined"]
-                st.success(f"Loaded {len(out_dict):,} products. Showing id, sku, product_name, brand_name, attribute_combined.")
-                st.dataframe(out_dict[show_cols], width="stretch", height=620)
-                st.session_state["out_dict"] = out_dict
+                if attempt == max_retries - 1:
+                    return {"pid": pid, "error": f"Failed validation after {max_retries} attempts."}
+
         except Exception as e:
-            st.error(f"Error loading data: {e}")
-# ----- Tab 2 -----
-with generate_tab:
-    st.subheader("Step 2: Generate")
-    if "out_dict" not in st.session_state:
-        st.warning("Load data first (Tab 1).")
+            if attempt == max_retries - 1:
+                return {"pid": pid, "error": f"API call failed after {max_retries} attempts: {e}"}
+    
+    return {"pid": pid, "error": f"Failed after {max_retries} attempts for unknown reasons."}
+
+# --- Database Saving Function for a Single Product ---
+def save_single_result_to_db(result, _h, _u, _p, _prt, _db):
+    engine_str = f"mysql+pymysql://{_u}:{_p}@{_h}:{_prt}/{_db}"
+    engine = create_engine(engine_str)
+    
+    with engine.connect() as connection:
+        with connection.begin() as transaction:
+            upsert_sql = text("""
+                INSERT INTO product_arabic_content (product_id, description_arabic, benefits_arabic, faqs_arabic, error_message)
+                VALUES (:pid, :desc, :ben, :faq, :err)
+                ON DUPLICATE KEY UPDATE
+                description_arabic = VALUES(description_arabic),
+                benefits_arabic = VALUES(benefits_arabic),
+                faqs_arabic = VALUES(faqs_arabic),
+                error_message = VALUES(error_message);
+            """)
+            
+            params = {
+                "pid": result.get('pid'),
+                "desc": json.dumps(result['data'].get('description'), ensure_ascii=False) if result.get('data') else None,
+                "ben": json.dumps(result['data'].get('benefits'), ensure_ascii=False) if result.get('data') else None,
+                "faq": json.dumps(result['data'].get('faqs'), ensure_ascii=False) if result.get('data') else None,
+                "err": result.get('error')
+            }
+            connection.execute(upsert_sql, params)
+            transaction.commit()
+    st.success(f"Successfully saved result for product ID {result.get('pid')} to the database!")
+
+# -------------------------
+# Main App UI
+# -------------------------
+if load_btn:
+    df = load_and_prepare_data(host, user, password, port, db_name)
+    st.session_state["product_df"] = df
+    if df.empty:
+        st.warning("Query returned no data. Check database connection or SQL query.")
     else:
-        out_dict = st.session_state["out_dict"]
-        c1, c2 = st.columns([2, 1])
-        product_id_input = c1.text_input("Enter Product ID", value="")
-        run_btn = c2.button("Generate", type="primary", use_container_width=True)
-        if run_btn:
+        st.success(f"Successfully loaded and prepared {len(df)} products.")
+
+tab1, tab2 = st.tabs(["1. View Loaded Products", "2. Generate Single Product"])
+
+with tab1:
+    if "product_df" in st.session_state:
+        st.dataframe(st.session_state["product_df"][['id', 'sku', 'product_name', 'brand_name']])
+    else:
+        st.info("Click 'Connect & Load Data' in the sidebar to begin.")
+
+with tab2:
+    if "product_df" not in st.session_state:
+        st.warning("Please load data first using the sidebar button.")
+    else:
+        product_id_input = st.text_input("Enter Product ID to generate content for:", placeholder="e.g., 8441")
+        
+        if st.button("Generate Content", type="primary"):
             if not product_id_input.strip():
-                st.error("Please enter a Product ID."); st.stop()
-            if not openai_key.strip():
-                st.error("Please paste your OPENAI_API_KEY in the sidebar."); st.stop()
-            row = get_product_row(out_dict, product_id_input)
-            if row is None:
-                st.error(f"Product doesn't exist with associated id: {product_id_input}"); st.stop()
-            # Build payload / English source first
-            product_payload = build_product_payload(row)
-            attribute_json = json.dumps(to_builtin(product_payload), ensure_ascii=False, indent=2)
-            k = choose_k(product_payload.get("attributes", {}))
-            # Show ENGLISH SOURCE FIRST
-            st.markdown("### English Source (attribute_combined)")
-            st.code(attribute_json, language="json")
-            # PROMPT — updated with your exact Arabic/brand/units/token rules
-            # Note: Ensured all literal braces in examples are properly escaped with double {{ }}
-            PROMPT_TEMPLATE = textwrap.dedent("""
-            Use ONLY this product JSON as your source of truth:
-            {attribute_json}
-
-ROLE & AUDIENCE
-Act as a HORECA content specialist creating product content for a B2B eCommerce platform. Audience: chefs, commercial kitchen operators, hotels, catering.
-
-TONE & STYLE
-- Modern Standard Arabic (MSA), clear, factual, B2B.
-- Active voice, no fluff/hype.
-- Use ONLY listed attributes; never invent.
-- Keep units/values exactly as provided in data, and always translate them to Arabic.
-- All content must be written in Right-to-Left (RTL).
-- All numbers must be written in Arabic numerals (٠١٢٣٤٥٦٧٨٩).
-- For “Liter”, “L”, or “Liters” always use "لتر". Do not use "لترات" and do not skip it where required by the data.
-- Do not mix units of capacity and length. “L” must be translated as "لتر", and “l” must be translated according to its associated feature in the data.
-
-CRITICAL NAMING & TOKEN RULES
-- Brand handling:
-  * If brand_name is already Arabic, copy it EXACTLY as given (no changes).
-  * If brand_name is in English, transliterate it ONCE to Arabic and reuse that consistently.
-  * Do NOT merge brand name, model name, and SKU. Keep each as provided in the data.
-- If "1-Group", "2-Group", "3-Group", or "Group" appears, always translate "Group" as "مجموعة" and convert the numbers "1", "2", "3" into Arabic numerals.
-- Colors: if multiple are listed in English, render all in Arabic joined by "و".
-- Do NOT start sentences with filler like "تعتبر". Start directly.
-- Keep SKU exactly as provided (ASCII), preceded by Arabic label where needed.
-- If a feature name like "UltraVent" appears, transliterate appropriately while preserving meaning in context.
-
-HARD RULES (NEVER BREAK)
-- Do NOT mention product weight unless handheld and specified.
-- Dimensions, if provided, must be translated exactly as given in the data (no reformatting).
-- Do NOT invent details not in specs.
-- Translate attributes exactly as given in the data.
-- Do NOT reference packaging/shipping/case quantity or origin if "Made in China".
-- No em dashes — use commas or periods.
-- Do NOT use "fl oz"; use "oz".
-- Do NOT generate section titles in the output.
-
-OUTPUT STRUCTURE — RETURN JSON ONLY (no markdown, no extra prose)
-{{
-  "description": ["paragraph1", "paragraph2", "paragraph3", "paragraph4"],
-  "benefits": [ // EXACTLY {k} items
-    {{"benefit": "Benefit Title", "feature": "One crisp sentence linking to a listed spec."}}
-  ],
-  "faqs": [ // EXACTLY 5 items
-    {{"question": "Question?", "answer": "Answer."}}
-  ]
-}}
-
-GUIDANCE FOR CONTENT
-1) DESCRIPTION (4 paragraphs; ~٣٠٠–٣٥٠ chars each; end with periods)
-   - P1: "The {{brand_name}} {{product_name}} and SKU {{sku}} is …" If brand or SKU missing, omit gracefully.
-   - P2: Core technical specifications and control features.
-   - P3: If dimensions exist, include them exactly as translated from data, with brief install/safety notes.
-   - P4: Certifications, warranty, commercial suitability; accessories only if listed.
-
-2) BENEFITS — EXACTLY {k} pairs (no dimensions or weight); each supported by listed features.
-
-3) TECHNICAL FAQ — EXACTLY 5 Q&A (short, factual; no dimensions/weight unless handheld).
-
-IMPORTANT
-- Output must be VALID JSON only, with exactly the required list lengths.
-- End every sentence with a period.
-- All content must be in Arabic, RTL-aligned, with numbers in Arabic numerals.
-            """).strip()
-            # Build prompt & call model (pass API key explicitly)
-            prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
-            msgs = prompt.format_messages(attribute_json=attribute_json, k=k)
-            with st.spinner("Translating to Arabic JSON via OpenAI..."):
-                llm = ChatOpenAI(
-                    api_key=openai_key, # key from sidebar
-                    model=model_name, # default gpt-5 per your request
-                    temperature=1.0,
-                    timeout=120,
-                )
+                st.error("Please enter a Product ID.")
+            elif not openai_key:
+                st.error("Please enter your OpenAI API Key in the sidebar.")
+            else:
                 try:
-                    resp = llm.invoke(msgs)
-                    raw = resp.content.strip()
-                    if not raw:
-                        raise ValueError("OpenAI returned an empty response.")
+                    product_id = int(product_id_input)
+                    df = st.session_state["product_df"]
+                    product_row = df[df['id'] == product_id]
+
+                    if product_row.empty:
+                        st.error(f"Product ID {product_id} not found in the loaded data.")
+                    else:
+                        with st.spinner("Generating content... This may take a moment. The process will retry up to 3 times on failure."):
+                            client = OpenAI(api_key=openai_key)
+                            result = generate_with_openai(product_row.iloc[0], client)
+                            st.session_state['last_result'] = result
+                except ValueError:
+                    st.error("Product ID must be a number.")
                 except Exception as e:
-                    st.error(f"Error during OpenAI API call: {str(e)}")
-                    st.stop()
-                # Strict JSON parse with tiny repair for trailing commas
+                    st.error(f"An unexpected error occurred: {e}")
+
+    if 'last_result' in st.session_state:
+        st.divider()
+        result = st.session_state['last_result']
+        
+        if result.get("error"):
+            st.error(f"Error for Product ID {result.get('pid')}:")
+            st.code(result.get("error"), language="text")
+        elif result.get("data"):
+            st.success(f"Successfully generated content for Product ID {result.get('pid')}")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("### English Source Data")
+                st.code(result.get("source_json"), language="json")
+            with col2:
+                st.markdown("### Generated Arabic Content")
+                st.json(result.get("data"))
+
+            if st.button("💾 Save this Result to Database"):
                 try:
-                    result_json = json.loads(raw)
-                except json.JSONDecodeError:
-                    fixed = re.sub(r",\s*([}\]])", r"\1", raw)
-                    try:
-                        result_json = json.loads(fixed)
-                    except json.JSONDecodeError:
-                        st.error("Failed to parse OpenAI response as JSON. Raw response below:")
-                        st.code(raw, language="text")
-                        st.stop()
-                # Enforce counts
-                if not isinstance(result_json.get("benefits"), list) or len(result_json["benefits"]) != k:
-                    arr = (result_json.get("benefits") or [])[:k]
-                    arr += [{"benefit": ".", "feature": "."}] * (k - len(arr))
-                    result_json["benefits"] = arr
-                if not isinstance(result_json.get("faqs"), list) or len(result_json["faqs"]) != 5:
-                    arr = (result_json.get("faqs") or [])[:5]
-                    arr += [{"question": ".", "answer": "."}] * (5 - len(arr))
-                    result_json["faqs"] = arr[:5]
-            st.markdown("### Arabic JSON (translated output)")
-            st.json(result_json, expanded=True)
-            # Downloads
-            st.download_button(
-                "Download English Source JSON",
-                data=attribute_json.encode("utf-8"),
-                file_name=f"product_{row['id']}_source.json",
-                mime="application/json",
-            )
-            st.download_button(
-                "Download Arabic JSON",
-                data=json.dumps(result_json, ensure_ascii=False, indent=2).encode("utf-8"),
-                file_name=f"product_{row['id']}_arabic.json",
-                mime="application/json",
-            )
+                    save_single_result_to_db(result, host, user, password, port, db_name)
+                except Exception as e:
+                    st.error(f"Failed to save to database: {e}")
