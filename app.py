@@ -29,9 +29,7 @@ password = st.sidebar.text_input("Password", value="Blackmango2025", type="passw
 db_name = st.sidebar.text_input("Database", value="horecadbuae")
 st.sidebar.header("OpenAI")
 openai_key = st.sidebar.text_input("OPENAI_API_KEY", value="", type="password", help="Paste your OpenAI API key here")
-# per your ask: use gpt-5 by default, with fallbacks exposed
-model_name = st.sidebar.selectbox("Model", ["gpt-5", "gpt-4o", "gpt-4o-mini"], index=0)
-temperature = st.sidebar.slider("Temperature", 0.0, 1.0, 0.2, 0.1)
+model_name = "gpt-5"
 st.sidebar.divider()
 load_btn = st.sidebar.button("Connect & Load Data", type="primary")
 # -------------------------
@@ -216,7 +214,7 @@ with generate_tab:
                 llm = ChatOpenAI(
                     api_key=openai_key, # key from sidebar
                     model=model_name, # default gpt-5 per your request
-                    temperature=float(temperature),
+                    temperature=1.0,
                     timeout=120,
                 )
                 try:
