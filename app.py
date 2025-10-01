@@ -162,8 +162,7 @@ with generate_tab:
             ROLE & AUDIENCE
             Act as a HORECA content specialist creating product content for a B2B eCommerce platform. Audience: chefs, commercial kitchen operators, hotels, catering.
             TONE & STYLE
-            - All generated content (description, benefits, FAQs) must be entirely in Modern Standard Arabic (MSA), clear, factual, B2B.
-            - Translate all English terms from attributes to Arabic, including descriptive lists like suitable locations (e.g., "Offices" to "مكاتب", "Cafes" to "مقاهي", "Espresso bar" to "بار إسبريسو", "Restaurant" to "مطعم", "Hotel" to "فندق", "Confectionery" to "حلويات"), materials, colors, and other non-technical terms.
+            - Modern Standard Arabic (MSA), clear, factual, B2B.
             - Active voice, no fluff/hype.
             - Use ONLY listed attributes; never invent.
             - Keep units/values exactly as provided.
@@ -172,20 +171,20 @@ with generate_tab:
               * If brand_name is already Arabic, copy it EXACTLY as given (no changes).
               * If brand_name is in English, transliterate it ONCE to Arabic and reuse that consistently.
               * Do NOT merge brand and model into a new brand term.
-            - Latin tokens to KEEP as-is (do NOT translate to Arabic): “2-Group”, “3-Group”, “Group”, “SKU”, voltage tokens like “110V”, “220V”, frequency/phase tokens like “1-Phase”, “3-Phase”.
-            - Colors: if multiple are listed in English, translate each to Arabic and join by “و”.
-            - Liters: always render as “لتر” in Arabic. Do not use “لترات” unless grammatically necessary.
-            - Do NOT start sentences with filler like “تعتبر”. Start directly.
+            - Latin tokens to KEEP as-is (do NOT translate to Arabic): "2-Group", "3-Group", "Group", "SKU", voltage tokens like "110V", "220V", frequency/phase tokens like "1-Phase", "3-Phase".
+            - Colors: if multiple are listed in English, render all in Arabic joined by "و".
+            - Liters: always render as "لتر" in Arabic. Do not use "لترات" unless grammatically necessary.
+            - Do NOT start sentences with filler like "تعتبر". Start directly.
             - Keep SKU exactly as provided (ASCII), preceded by Arabic label where needed.
-            - If a feature name like “UltraVent” appears, transliterate appropriately while preserving meaning in context.
+            - If a feature name like "UltraVent" appears, transliterate appropriately while preserving meaning in context.
             HARD RULES (NEVER BREAK)
             - Do NOT mention product weight unless handheld and specified.
             - Do NOT include dimensions or weight in benefits or FAQ.
-            - Dimensions, if provided, must be in WxDxH or LxDxH exactly; add “(عرض × عمق × ارتفاع)” once.
+            - Dimensions, if provided, must be in WxDxH or LxDxH exactly; add "(عرض × عمق × ارتفاع)" once.
             - Do NOT invent details not in specs.
-            - Do NOT reference packaging/shipping/case quantity or origin if “Made in China”.
+            - Do NOT reference packaging/shipping/case quantity or origin if "Made in China".
             - No em dashes — use commas or periods.
-            - Do NOT use “fl oz”; use “oz”.
+            - Do NOT use "fl oz"; use "oz".
             OUTPUT STRUCTURE — RETURN JSON ONLY (no markdown, no extra prose)
             {{
               "description": ["paragraph1", "paragraph2", "paragraph3", "paragraph4"],
@@ -197,13 +196,13 @@ with generate_tab:
               ]
             }}
             GUIDANCE FOR CONTENT
-            1) DESCRIPTION (4 paragraphs; ~300–350 chars each; end with periods; all in Arabic)
-               - P1: Start with Arabic: "ماكينة {brand_name} {product_name} ورمز SKU {sku} هي..." (transliterate and translate appropriately). If brand or SKU missing, omit gracefully.
-               - P2: Core technical specifications and control features in Arabic; keep Latin tokens unmodified (e.g., 2-Group).
-               - P3: If dimensions exist, include WxDxH or LxDxH with Arabic explanation; brief install/safety notes in Arabic.
-               - P4: Certifications, warranty, commercial suitability in Arabic; accessories only if listed.
-            2) BENEFITS — EXACTLY {k} pairs (no dimensions or weight); each supported by listed features, all in Arabic.
-            3) TECHNICAL FAQ — EXACTLY 5 Q&A (short, factual; no dimensions/weight unless handheld), all in Arabic.
+            1) DESCRIPTION (4 paragraphs; ~300–350 chars each; end with periods)
+               - P1: "The {{brand_name}} {{product_name}} and SKU {{sku}} is …" If brand or SKU missing, omit gracefully.
+               - P2: Core technical specifications and control features; keep Latin tokens unmodified (e.g., 2-Group).
+               - P3: If dimensions exist, include WxDxH or LxDxH; brief install/safety notes.
+               - P4: Certifications, warranty, commercial suitability; accessories only if listed.
+            2) BENEFITS — EXACTLY {k} pairs (no dimensions or weight); each supported by listed features.
+            3) TECHNICAL FAQ — EXACTLY 5 Q&A (short, factual; no dimensions/weight unless handheld).
             IMPORTANT
             - Output must be VALID JSON only, with exactly the required list lengths.
             - End every sentence with a period.
