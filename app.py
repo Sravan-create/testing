@@ -11,63 +11,55 @@ from openai import OpenAI
 
 # --- Page Config ---
 st.set_page_config(page_title="HORECA Arabic Content Generator", layout="wide")
-st.title("HORECA Arabic Content Generator (Single Product)")
-st.caption("Connect to DB ➔ Find Product ID ➔ Generate Content ➔ Save to DB")
+st.title("HORECA Arabic Content Generator")
+st.caption("Using the robust, retry-enabled OpenAI logic for single product generation.")
 
 # -------------------------
 # Sidebar controls
 # -------------------------
-with st.sidebar:
-    st.header("1. Database Connection")
-    host = st.text_input("Host", value="horecadbdevelopment.c1c86oy8g663.me-south-1.rds.amazonaws.com")
-    port = st.number_input("Port", value=3306, step=1)
-    user = st.text_input("Username", value="horecaDbUAE")
-    password = st.text_input("Password", value="Blackmango2025", type="password")
-    db_name = st.text_input("Database", value="horecadbuae")
+st.sidebar.header("Database Connection")
+host = st.sidebar.text_input("Host", value="horecadbdevelopment.c1c86oy8g663.me-south-1.rds.amazonaws.com")
+port = st.sidebar.number_input("Port", value=3306, step=1)
+user = st.sidebar.text_input("Username", value="horecaDbUAE")
+password = st.sidebar.text_input("Password", value="Blackmango2025", type="password")
+db_name = st.sidebar.text_input("Database", value="horecadbuae")
 
-    st.header("2. OpenAI Configuration")
-    openai_key = st.text_input("OPENAI_API_KEY", type="password", help="Paste your OpenAI API key here")
-    
-    st.divider()
-    load_btn = st.button("Connect & Load Data", type="primary")
+st.sidebar.header("OpenAI")
+openai_key = st.sidebar.text_input("OPENAI_API_KEY", value="", type="password", help="Paste your OpenAI API key here")
+st.sidebar.divider()
+load_btn = st.sidebar.button("Connect & Load Data", type="primary")
 
 # -------------------------
-# SQL Queries
+# SQL Query
 # -------------------------
-FETCH_SQL = textwrap.dedent("""
-    SELECT p.id, p.sku, p.name AS product_name, b.name AS brand_name, a.name AS attribute_name, pa.attribute_value
+# FIXED: Removed the WHERE clause with the non-existent 'p.is_published' column.
+SQL = textwrap.dedent("""
+    SELECT
+      p.id AS id,
+      p.sku AS sku,
+      p.name AS product_name,
+      b.name AS brand_name,
+      a.name AS attribute_name,
+      pa.attribute_value
     FROM ec_products AS p
     LEFT JOIN ec_brands AS b ON b.id = p.brand_id
     JOIN product_attributes AS pa ON pa.product_id = p.id
     JOIN attributes AS a ON a.id = pa.attribute_id
-    WHERE p.is_published = 1
     ORDER BY p.id, a.name;
 """)
 
-CREATE_TABLE_SQL = textwrap.dedent("""
-    CREATE TABLE IF NOT EXISTS product_arabic_content (
-        product_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
-        description_arabic JSON,
-        benefits_arabic JSON,
-        faqs_arabic JSON,
-        error_message TEXT,
-        last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        CONSTRAINT fk_product_content_id FOREIGN KEY (product_id) REFERENCES ec_products(id) ON DELETE CASCADE
-    );
-""")
-
 # -------------------------
-# Data Loading and Helper Functions
+# Helper and Data Processing Functions
 # -------------------------
 @st.cache_data(show_spinner="Connecting to database and loading products...", ttl=600)
-def load_and_prepare_data(_h, _u, _p, _prt, _db):
-    engine_str = f"mysql+pymysql://{_u}:{_p}@{_h}:{_prt}/{_db}"
+def load_and_prepare_data(h, u, p, prt, db):
+    engine_str = f"mysql+pymysql://{u}:{p}@{h}:{prt}/{db}"
     engine = create_engine(engine_str)
     with engine.connect() as connection:
-        connection.execute(text(CREATE_TABLE_SQL))
-        df = pd.read_sql(FETCH_SQL, connection)
+        df = pd.read_sql(text(SQL), connection)
     
-    if df.empty: return pd.DataFrame()
+    if df.empty:
+        return pd.DataFrame()
 
     meta = ["id", "sku", "product_name", "brand_name"]
     wide = df.pivot_table(index=meta, columns="attribute_name", values="attribute_value", aggfunc="first").reset_index()
@@ -75,6 +67,7 @@ def load_and_prepare_data(_h, _u, _p, _prt, _db):
     wide["attribute_combined"] = wide[attr_cols].apply(lambda r: {k: v for k, v in r.items() if pd.notna(v)}, axis=1)
     return wide[meta + ["attribute_combined"]]
 
+# ADDED: Helper functions from your working script.
 def decide_benefit_count(num_attrs: int) -> int:
     if num_attrs <= 4: return 5
     if num_attrs == 5: return 6
@@ -94,7 +87,7 @@ def check_content_arabic(desc, benefits, faqs):
             [f.get('question', '') for f in faqs] + [f.get('answer', '') for f in faqs]
     return all(is_arabic(t) for t in texts if t.strip())
 
-# --- Core OpenAI Generation Logic (from your script) ---
+# REPLACED: Integrated your robust generate_with_openai function.
 def generate_with_openai(row, client):
     """Generates content for a single product row with robust retries."""
     pid = str(row['id'])
@@ -116,7 +109,7 @@ def generate_with_openai(row, client):
     
     TONE & STYLE: Modern Standard Arabic (MSA), clear, factual, B2B. Active voice. Use ONLY listed attributes. All numbers in Arabic numerals (٠١٢٣٤٥٦٧٨٩). All content RTL.
     
-    CRITICAL RULES: Transliterate English brand names ONCE and reuse. Do NOT merge brand, model, SKU. Translate "Group" in "1-Group" as "مجموعة".
+    CRITICAL NAMING & TOKEN RULES: Transliterate English brand names ONCE and reuse. Do NOT merge brand, model, SKU. Translate "Group" in "1-Group" as "مجموعة".
     
     HARD RULES: NO inventing details. NO section titles. Translate units and values exactly.
     
@@ -160,82 +153,63 @@ def generate_with_openai(row, client):
     
     return {"pid": pid, "error": f"Failed after {max_retries} attempts for unknown reasons."}
 
-# --- Database Saving Function for a Single Product ---
-def save_single_result_to_db(result, _h, _u, _p, _prt, _db):
-    engine_str = f"mysql+pymysql://{_u}:{_p}@{_h}:{_prt}/{_db}"
-    engine = create_engine(engine_str)
-    
-    with engine.connect() as connection:
-        with connection.begin() as transaction:
-            upsert_sql = text("""
-                INSERT INTO product_arabic_content (product_id, description_arabic, benefits_arabic, faqs_arabic, error_message)
-                VALUES (:pid, :desc, :ben, :faq, :err)
-                ON DUPLICATE KEY UPDATE
-                description_arabic = VALUES(description_arabic),
-                benefits_arabic = VALUES(benefits_arabic),
-                faqs_arabic = VALUES(faqs_arabic),
-                error_message = VALUES(error_message);
-            """)
-            
-            params = {
-                "pid": result.get('pid'),
-                "desc": json.dumps(result['data'].get('description'), ensure_ascii=False) if result.get('data') else None,
-                "ben": json.dumps(result['data'].get('benefits'), ensure_ascii=False) if result.get('data') else None,
-                "faq": json.dumps(result['data'].get('faqs'), ensure_ascii=False) if result.get('data') else None,
-                "err": result.get('error')
-            }
-            connection.execute(upsert_sql, params)
-            transaction.commit()
-    st.success(f"Successfully saved result for product ID {result.get('pid')} to the database!")
-
 # -------------------------
 # Main App UI
 # -------------------------
-if load_btn:
-    df = load_and_prepare_data(host, user, password, port, db_name)
-    st.session_state["product_df"] = df
-    if df.empty:
-        st.warning("Query returned no data. Check database connection or SQL query.")
-    else:
-        st.success(f"Successfully loaded and prepared {len(df)} products.")
+data_tab, generate_tab = st.tabs(["1) View Loaded Products", "2) Generate Content"])
 
-tab1, tab2 = st.tabs(["1. View Loaded Products", "2. Generate Single Product"])
-
-with tab1:
+with data_tab:
+    st.subheader("Step 1: Connect and Load")
+    if load_btn:
+        try:
+            df = load_and_prepare_data(host, user, password, port, db_name)
+            if df.empty:
+                st.warning("The query returned no rows.")
+            else:
+                st.session_state["product_df"] = df
+                st.success(f"Loaded {len(df):,} products.")
+        except Exception as e:
+            st.error(f"Error loading data: {e}")
+    
     if "product_df" in st.session_state:
         st.dataframe(st.session_state["product_df"][['id', 'sku', 'product_name', 'brand_name']])
     else:
         st.info("Click 'Connect & Load Data' in the sidebar to begin.")
 
-with tab2:
+with generate_tab:
+    st.subheader("Step 2: Generate")
     if "product_df" not in st.session_state:
-        st.warning("Please load data first using the sidebar button.")
+        st.warning("Load data first (Tab 1).")
     else:
-        product_id_input = st.text_input("Enter Product ID to generate content for:", placeholder="e.g., 8441")
-        
-        if st.button("Generate Content", type="primary"):
+        product_id_input = st.text_input("Enter Product ID", placeholder="e.g., 8441")
+        run_btn = st.button("Generate", type="primary", use_container_width=True)
+
+        if run_btn:
             if not product_id_input.strip():
                 st.error("Please enter a Product ID.")
-            elif not openai_key:
-                st.error("Please enter your OpenAI API Key in the sidebar.")
+            elif not openai_key.strip():
+                st.error("Please paste your OPENAI_API_KEY in the sidebar.")
             else:
                 try:
                     product_id = int(product_id_input)
                     df = st.session_state["product_df"]
-                    product_row = df[df['id'] == product_id]
-
-                    if product_row.empty:
-                        st.error(f"Product ID {product_id} not found in the loaded data.")
+                    row_df = df[df['id'] == product_id]
+                    
+                    if row_df.empty:
+                        st.error(f"Product ID {product_id} not found.")
                     else:
+                        # UPDATED: Replaced LangChain logic with direct OpenAI client call.
                         with st.spinner("Generating content... This may take a moment. The process will retry up to 3 times on failure."):
                             client = OpenAI(api_key=openai_key)
-                            result = generate_with_openai(product_row.iloc[0], client)
+                            result = generate_with_openai(row_df.iloc[0], client)
                             st.session_state['last_result'] = result
+
                 except ValueError:
                     st.error("Product ID must be a number.")
                 except Exception as e:
                     st.error(f"An unexpected error occurred: {e}")
 
+    # Display the result outside the button click block to persist on screen
     if 'last_result' in st.session_state:
         st.divider()
         result = st.session_state['last_result']
@@ -245,7 +219,6 @@ with tab2:
             st.code(result.get("error"), language="text")
         elif result.get("data"):
             st.success(f"Successfully generated content for Product ID {result.get('pid')}")
-            
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("### English Source Data")
@@ -253,9 +226,3 @@ with tab2:
             with col2:
                 st.markdown("### Generated Arabic Content")
                 st.json(result.get("data"))
-
-            if st.button("💾 Save this Result to Database"):
-                try:
-                    save_single_result_to_db(result, host, user, password, port, db_name)
-                except Exception as e:
-                    st.error(f"Failed to save to database: {e}")
