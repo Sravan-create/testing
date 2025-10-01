@@ -159,53 +159,67 @@ with generate_tab:
             PROMPT_TEMPLATE = textwrap.dedent("""
             Use ONLY this product JSON as your source of truth:
             {attribute_json}
-            ROLE & AUDIENCE
-            Act as a HORECA content specialist creating product content for a B2B eCommerce platform. Audience: chefs, commercial kitchen operators, hotels, catering.
-            TONE & STYLE
-            - Modern Standard Arabic (MSA), clear, factual, B2B.
-            - Active voice, no fluff/hype.
-            - Use ONLY listed attributes; never invent.
-            - Keep units/values exactly as provided.
-            CRITICAL NAMING & TOKEN RULES
-            - Brand handling:
-              * If brand_name is already Arabic, copy it EXACTLY as given (no changes).
-              * If brand_name is in English, transliterate it ONCE to Arabic and reuse that consistently.
-              * Do NOT merge brand and model into a new brand term.
-            - Latin tokens to KEEP as-is (do NOT translate to Arabic): "2-Group", "3-Group", "Group", "SKU", voltage tokens like "110V", "220V", frequency/phase tokens like "1-Phase", "3-Phase".
-            - Colors: if multiple are listed in English, render all in Arabic joined by "و".
-            - Liters: always render as "لتر" in Arabic. Do not use "لترات" unless grammatically necessary.
-            - Do NOT start sentences with filler like "تعتبر". Start directly.
-            - Keep SKU exactly as provided (ASCII), preceded by Arabic label where needed.
-            - If a feature name like "UltraVent" appears, transliterate appropriately while preserving meaning in context.
-            HARD RULES (NEVER BREAK)
-            - Do NOT mention product weight unless handheld and specified.
-            - Do NOT include dimensions or weight in benefits or FAQ.
-            - Dimensions, if provided, must be in WxDxH or LxDxH exactly; add "(عرض × عمق × ارتفاع)" once.
-            - Do NOT invent details not in specs.
-            - Do NOT reference packaging/shipping/case quantity or origin if "Made in China".
-            - No em dashes — use commas or periods.
-            - Do NOT use "fl oz"; use "oz".
-            OUTPUT STRUCTURE — RETURN JSON ONLY (no markdown, no extra prose)
-            {{
-              "description": ["paragraph1", "paragraph2", "paragraph3", "paragraph4"],
-              "benefits": [ // EXACTLY {k} items
-                {{"benefit": "Benefit Title", "feature": "One crisp sentence linking to a listed spec."}}
-              ],
-              "faqs": [ // EXACTLY 5 items
-                {{"question": "Question?", "answer": "Answer."}}
-              ]
-            }}
-            GUIDANCE FOR CONTENT
-            1) DESCRIPTION (4 paragraphs; ~300–350 chars each; end with periods)
-               - P1: "The {{brand_name}} {{product_name}} and SKU {{sku}} is …" If brand or SKU missing, omit gracefully.
-               - P2: Core technical specifications and control features; keep Latin tokens unmodified (e.g., 2-Group).
-               - P3: If dimensions exist, include WxDxH or LxDxH; brief install/safety notes.
-               - P4: Certifications, warranty, commercial suitability; accessories only if listed.
-            2) BENEFITS — EXACTLY {k} pairs (no dimensions or weight); each supported by listed features.
-            3) TECHNICAL FAQ — EXACTLY 5 Q&A (short, factual; no dimensions/weight unless handheld).
-            IMPORTANT
-            - Output must be VALID JSON only, with exactly the required list lengths.
-            - End every sentence with a period.
+
+ROLE & AUDIENCE
+Act as a HORECA content specialist creating product content for a B2B eCommerce platform. Audience: chefs, commercial kitchen operators, hotels, catering.
+
+TONE & STYLE
+- Modern Standard Arabic (MSA), clear, factual, B2B.
+- Active voice, no fluff/hype.
+- Use ONLY listed attributes; never invent.
+- Keep units/values exactly as provided in data, and always translate them to Arabic.
+- All content must be written in Right-to-Left (RTL).
+- All numbers must be written in Arabic numerals (٠١٢٣٤٥٦٧٨٩).
+- For “Liter”, “L”, or “Liters” always use "لتر". Do not use "لترات" and do not skip it where required by the data.
+- Do not mix units of capacity and length. “L” must be translated as "لتر", and “l” must be translated according to its associated feature in the data.
+
+CRITICAL NAMING & TOKEN RULES
+- Brand handling:
+  * If brand_name is already Arabic, copy it EXACTLY as given (no changes).
+  * If brand_name is in English, transliterate it ONCE to Arabic and reuse that consistently.
+  * Do NOT merge brand name, model name, and SKU. Keep each as provided in the data.
+- If "1-Group", "2-Group", "3-Group", or "Group" appears, always translate "Group" as "مجموعة" and convert the numbers "1", "2", "3" into Arabic numerals.
+- Colors: if multiple are listed in English, render all in Arabic joined by "و".
+- Do NOT start sentences with filler like "تعتبر". Start directly.
+- Keep SKU exactly as provided (ASCII), preceded by Arabic label where needed.
+- If a feature name like "UltraVent" appears, transliterate appropriately while preserving meaning in context.
+
+HARD RULES (NEVER BREAK)
+- Do NOT mention product weight unless handheld and specified.
+- Dimensions, if provided, must be translated exactly as given in the data (no reformatting).
+- Do NOT invent details not in specs.
+- Translate attributes exactly as given in the data.
+- Do NOT reference packaging/shipping/case quantity or origin if "Made in China".
+- No em dashes — use commas or periods.
+- Do NOT use "fl oz"; use "oz".
+- Do NOT generate section titles in the output.
+
+OUTPUT STRUCTURE — RETURN JSON ONLY (no markdown, no extra prose)
+{{
+  "description": ["paragraph1", "paragraph2", "paragraph3", "paragraph4"],
+  "benefits": [ // EXACTLY {k} items
+    {{"benefit": "Benefit Title", "feature": "One crisp sentence linking to a listed spec."}}
+  ],
+  "faqs": [ // EXACTLY 5 items
+    {{"question": "Question?", "answer": "Answer."}}
+  ]
+}}
+
+GUIDANCE FOR CONTENT
+1) DESCRIPTION (4 paragraphs; ~٣٠٠–٣٥٠ chars each; end with periods)
+   - P1: "The {{brand_name}} {{product_name}} and SKU {{sku}} is …" If brand or SKU missing, omit gracefully.
+   - P2: Core technical specifications and control features.
+   - P3: If dimensions exist, include them exactly as translated from data, with brief install/safety notes.
+   - P4: Certifications, warranty, commercial suitability; accessories only if listed.
+
+2) BENEFITS — EXACTLY {k} pairs (no dimensions or weight); each supported by listed features.
+
+3) TECHNICAL FAQ — EXACTLY 5 Q&A (short, factual; no dimensions/weight unless handheld).
+
+IMPORTANT
+- Output must be VALID JSON only, with exactly the required list lengths.
+- End every sentence with a period.
+- All content must be in Arabic, RTL-aligned, with numbers in Arabic numerals.
             """).strip()
             # Build prompt & call model (pass API key explicitly)
             prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
